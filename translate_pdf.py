@@ -246,6 +246,67 @@ def clean_hebrew_with_claude(texts: dict[int, str], model: str) -> dict[int, str
 
 
 # ---------------------------------------------------------------------------
+# Rashi reading validator
+# ---------------------------------------------------------------------------
+
+def validate_rashi_reading(sentence: str, model: str) -> None:
+    """Check whether a Hebrew sentence transcribed from Rashi script is coherent."""
+    try:
+        import anthropic
+    except ImportError:
+        print("Error: anthropic not installed. Run: pip install anthropic")
+        sys.exit(1)
+
+    client = anthropic.Anthropic()
+
+    system = (
+        "You are an expert in classical and rabbinic Hebrew, specializing in Rashi semi-cursive script. "
+        "A scholar is hand-reading a scanned manuscript written in Rashi script and has typed what they "
+        "believe the text says. Because certain letters are visually similar in Rashi script, "
+        "they may have misread one or two characters in a word.\n\n"
+        "The most common Rashi script confusable pairs are:\n"
+        "  • ד ↔ ר  (dalet / resh)\n"
+        "  • ו ↔ ז  (vav / zayin)\n"
+        "  • ה ↔ ח ↔ ת  (he / chet / tav)\n"
+        "  • י ↔ ו  (yod / vav)\n"
+        "  • כ ↔ ב  (kaf / bet)\n"
+        "  • נ ↔ ג  (nun / gimel)\n"
+        "  • מ ↔ ס  (mem / samech)\n\n"
+        "Your task:\n"
+        "1. Read the submitted sentence as Hebrew (square or rabbinic — the scholar has already "
+        "transliterated it into Unicode Hebrew for you).\n"
+        "2. Determine whether the sentence is coherent biblical, Talmudic, or rabbinic Hebrew.\n"
+        "3. Flag any word that looks wrong due to a likely character misread (applying the confusable "
+        "pairs above). For each flagged word, state the suspicious word, the most plausible corrected "
+        "word, and which letter swap explains it.\n"
+        "4. If corrections are needed, provide the most likely intended reading of the full sentence.\n\n"
+        "Output format — use exactly these four sections, even if some are empty:\n\n"
+        "VERDICT: [Coherent | Likely error | Unclear]\n\n"
+        "FLAGGED WORDS:\n"
+        "<word as submitted> → <corrected word>  (swap: X ↔ Y)\n"
+        "(or 'None' if the sentence is fully coherent)\n\n"
+        "LIKELY INTENDED TEXT:\n"
+        "<corrected full sentence, or 'Same as submitted' if no changes>\n\n"
+        "NOTES:\n"
+        "<brief explanation of your reasoning, or anything else the scholar should know>"
+    )
+
+    print("Validating...")
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": sentence}],
+        )
+        print()
+        print(response.content[0].text)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Translation
 # ---------------------------------------------------------------------------
 
@@ -353,8 +414,6 @@ def process_pdf(
         return
     print(f"  Extracted {len(texts)} page(s)")
 
-    write_output(texts, hebrew_out)
-
     # For OCR output, run a Claude cleanup pass to fix misread characters
     # before translation. Skipped for pdftotext (already clean) or --no-clean.
     texts_for_translation = texts
@@ -362,6 +421,8 @@ def process_pdf(
         print(f"Cleaning Hebrew OCR output with Claude ({model})...")
         texts_for_translation = clean_hebrew_with_claude(texts, model=model)
         write_output(texts_for_translation, hebrew_clean_out)
+    else:
+        write_output(texts, hebrew_out)
 
     if no_translate:
         return
@@ -441,8 +502,22 @@ def main() -> None:
             "Run this once before using --extractor ocr on Rashi-script PDFs."
         ),
     )
+    parser.add_argument(
+        "--validate", "-v",
+        metavar="TEXT",
+        help=(
+            "Validate a Hebrew sentence you transcribed from a Rashi-script manuscript. "
+            "Returns a verdict (coherent / likely error), flags suspicious words with "
+            "their probable correct readings, and shows the likely intended text. "
+            "No PDF input is needed when using this flag."
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.validate:
+        validate_rashi_reading(args.validate, model=args.model)
+        sys.exit(0)
 
     if args.setup_rashi:
         success = download_rashi_model()
