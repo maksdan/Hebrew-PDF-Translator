@@ -5,7 +5,8 @@ Extract text from Hebrew PDFs and translate to English using Claude. Designed fo
 ## Features
 
 - **Two extraction methods:** `pdftotext` for PDFs with embedded text, Tesseract OCR for scanned documents and Rashi script
-- **Claude-powered translation** with a system prompt tuned for rabbinic Hebrew, Aramaic (Targumim), and OCR error correction
+- **Hebrew cleanup pass** (OCR mode only): Claude reconstructs the raw OCR output into coherent Hebrew before translation — fixing artifacts, resolving ambiguous Rashi letter-pairs (e.g. ר/ד, ו/ז, ה/ח/ת) by evaluating contextual meaning, and restoring plausible readings where letters are damaged or unclear
+- **Claude-powered translation** from the cleaned Hebrew to natural English, tuned for rabbinic Hebrew, Aramaic (Targumim), and mixed-script texts
 - **Batch processing:** single files, multiple files, or entire directories
 - **Page selection:** process specific pages with `--pages 1-5,7,9-11`
 
@@ -42,8 +43,11 @@ python translate_pdf.py document.pdf --pages 1-10
 # Extract Hebrew text without translating
 python translate_pdf.py document.pdf --no-translate
 
-# Use OCR for scanned PDFs or Rashi script
+# Use OCR for scanned PDFs or Rashi script (includes Hebrew cleanup pass automatically)
 python translate_pdf.py document.pdf --extractor ocr
+
+# Skip the Hebrew cleanup pass and translate raw OCR output directly
+python translate_pdf.py document.pdf --extractor ocr --no-clean
 
 # Process all PDFs in a directory
 python translate_pdf.py ./pdfs_folder/
@@ -68,7 +72,8 @@ This downloads `heb_rashi.traineddata` from the [Pninim project](https://gitlab.
 ## Output
 
 For each input PDF, the tool produces:
-- `<filename>_hebrew.txt` — extracted Hebrew text
+- `<filename>_hebrew.txt` — raw extracted Hebrew text
+- `<filename>_hebrew_clean.txt` — Claude-reconstructed Hebrew (OCR mode only, unless `--no-clean`)
 - `<filename>_english.txt` — English translation
 
 Use `--output-dir` to write all output to a specific directory.
