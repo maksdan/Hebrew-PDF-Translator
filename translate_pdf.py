@@ -183,6 +183,69 @@ def parse_pages(spec: str) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# Hebrew cleanup (OCR de-glitch)
+# ---------------------------------------------------------------------------
+
+def clean_hebrew_with_claude(texts: dict[int, str], model: str) -> dict[int, str]:
+    try:
+        import anthropic
+    except ImportError:
+        print("Error: anthropic not installed. Run: pip install anthropic")
+        sys.exit(1)
+
+    client = anthropic.Anthropic()
+    cleaned: dict[int, str] = {}
+
+    system = [
+        {
+            "type": "text",
+            "text": (
+                "You are an expert in classical and rabbinic Hebrew texts, including Rashi semi-cursive script. "
+                "The text you receive was produced by OCR on scanned historical Hebrew books and contains errors. "
+                "Your job is to produce correct, coherent Hebrew — this means two things:\n\n"
+                "1. Fix OCR artifacts: remove stray characters, fix garbled words, correct obvious misreads.\n\n"
+                "2. Reconstruct ambiguous letters using meaning: Rashi script has letter-pairs that look nearly "
+                "identical (e.g. ר/ד, ו/ז, ה/ח/ת, נ/ג, י/ו, כ/בּ). When the OCR picks the wrong one, the word "
+                "may be nonsensical or grammatically broken. Actively evaluate each suspicious word in context — "
+                "ask which letter choice produces coherent Hebrew given the surrounding grammar, syntax, and subject "
+                "matter — and substitute accordingly. Do not leave a word as-is simply because the OCR produced "
+                "something letter-shaped; if it doesn't make sense, fix it.\n\n"
+                "Use your knowledge of biblical, Talmudic, and rabbinic literature to judge what the text is "
+                "trying to say. When confident, correct. When uncertain between two readings, pick the one that "
+                "fits the context best.\n\n"
+                "Rules: output only the corrected Hebrew — no translation, no transliteration, no commentary. "
+                "Preserve paragraph structure and line breaks. "
+                "If a passage is too damaged to recover, output your best reconstruction rather than omitting it."
+            ),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+    for page_num, text in sorted(texts.items()):
+        if not text.strip():
+            cleaned[page_num] = ""
+            continue
+
+        print(f"  Page {page_num}...", end=" ", flush=True)
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system,
+                messages=[{"role": "user", "content": text}],
+            )
+            cleaned[page_num] = response.content[0].text
+            print("done")
+        except Exception as exc:
+            print(f"FAILED: {exc} — keeping raw OCR text")
+            cleaned[page_num] = text  # fall back to raw rather than losing the page
+
+        time.sleep(0.4)
+
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
 # Translation
 # ---------------------------------------------------------------------------
 
@@ -267,9 +330,11 @@ def process_pdf(
     extractor: str,
     model: str,
     no_translate: bool,
+    no_clean: bool,
 ) -> None:
     stem = pdf_path.stem
     hebrew_out = output_dir / f"{stem}_hebrew.txt"
+    hebrew_clean_out = output_dir / f"{stem}_hebrew_clean.txt"
     english_out = output_dir / f"{stem}_english.txt"
 
     print(f"\n{'─' * 60}")
@@ -290,11 +355,19 @@ def process_pdf(
 
     write_output(texts, hebrew_out)
 
+    # For OCR output, run a Claude cleanup pass to fix misread characters
+    # before translation. Skipped for pdftotext (already clean) or --no-clean.
+    texts_for_translation = texts
+    if extractor == "ocr" and not no_clean and not no_translate:
+        print(f"Cleaning Hebrew OCR output with Claude ({model})...")
+        texts_for_translation = clean_hebrew_with_claude(texts, model=model)
+        write_output(texts_for_translation, hebrew_clean_out)
+
     if no_translate:
         return
 
     print(f"Translating with Claude ({model})...")
-    translations = translate_with_claude(texts, model=model)
+    translations = translate_with_claude(texts_for_translation, model=model)
 
     write_output(translations, english_out)
 
@@ -350,6 +423,14 @@ def main() -> None:
         "--no-translate",
         action="store_true",
         help="Only extract Hebrew text; skip translation.",
+    )
+    parser.add_argument(
+        "--no-clean",
+        action="store_true",
+        help=(
+            "Skip the Hebrew OCR cleanup pass (only relevant with --extractor ocr). "
+            "Translation will use raw OCR output instead of the de-glitched Hebrew."
+        ),
     )
     parser.add_argument(
         "--setup-rashi",
@@ -414,6 +495,7 @@ def main() -> None:
             extractor=args.extractor,
             model=args.model,
             no_translate=args.no_translate,
+            no_clean=args.no_clean,
         )
 
     print(f"\nAll done. Processed {len(pdf_files)} file(s).")
